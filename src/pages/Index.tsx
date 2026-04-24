@@ -1,5 +1,58 @@
-import { useState } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import Icon from '@/components/ui/icon';
+
+// Генерация звука пука через Web Audio API
+function playFartSound(variant: number) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+  const ctx = new AudioCtx();
+  const duration = 0.4 + (variant % 4) * 0.15;
+
+  const oscillator = ctx.createOscillator();
+  const gainNode = ctx.createGain();
+  const distortion = ctx.createWaveShaper();
+
+  // Кривая дисторшна для "грязного" звука
+  const curve = new Float32Array(256);
+  for (let i = 0; i < 256; i++) {
+    const x = (i * 2) / 256 - 1;
+    curve[i] = (Math.PI + 300) * x / (Math.PI + 300 * Math.abs(x));
+  }
+  distortion.curve = curve;
+
+  oscillator.connect(distortion);
+  distortion.connect(gainNode);
+  gainNode.connect(ctx.destination);
+
+  const baseFreqs = [120, 80, 100, 60, 90, 70, 110, 85];
+  const baseFreq = baseFreqs[variant % baseFreqs.length];
+
+  oscillator.type = 'sawtooth';
+  oscillator.frequency.setValueAtTime(baseFreq + 40, ctx.currentTime);
+  oscillator.frequency.exponentialRampToValueAtTime(baseFreq * 0.3, ctx.currentTime + duration);
+
+  // Небольшая вибрация
+  oscillator.frequency.setValueAtTime(baseFreq + 40, ctx.currentTime);
+  for (let i = 0; i < 8; i++) {
+    const t = ctx.currentTime + (i * duration) / 8;
+    const wobble = baseFreq + 40 - (i / 8) * (baseFreq * 0.7) + Math.sin(i * 3) * 15;
+    oscillator.frequency.setValueAtTime(wobble, t);
+  }
+
+  gainNode.gain.setValueAtTime(0.6, ctx.currentTime);
+  gainNode.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + duration);
+
+  oscillator.start(ctx.currentTime);
+  oscillator.stop(ctx.currentTime + duration);
+
+  setTimeout(() => ctx.close(), (duration + 0.1) * 1000);
+}
+
+interface FartCloud {
+  id: number;
+  x: number;
+  y: number;
+}
 
 type Page = 'home' | 'gallery' | 'rating' | 'about';
 
@@ -99,7 +152,7 @@ const SoundCard = ({
   sound, rank, voted, onVote, onPlay, playing,
 }: {
   sound: Sound; rank?: number; voted: boolean;
-  onVote: (id: number) => void; onPlay: (id: number) => void; playing: boolean;
+  onVote: (id: number, e: React.MouseEvent) => void; onPlay: (id: number) => void; playing: boolean;
 }) => {
   const c = COLOR_MAP[sound.color];
 
@@ -156,8 +209,8 @@ const SoundCard = ({
           {sound.plays.toLocaleString('ru')}
         </span>
         <button
-          onClick={() => onVote(sound.id)}
-          className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border transition-all vote-btn ${
+          onClick={(e) => onVote(sound.id, e)}
+          className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border transition-all vote-btn relative overflow-visible ${
             voted
               ? 'bg-yellow-400/15 border-yellow-500/40 text-yellow-300'
               : 'bg-white/5 border-white/10 text-gray-400 hover:border-purple-500/40 hover:text-purple-300'
@@ -172,7 +225,7 @@ const SoundCard = ({
 };
 
 const HomePage = ({ sounds, votes, onVote, playing, onPlay, setPage }: {
-  sounds: Sound[]; votes: Set<number>; onVote: (id: number) => void;
+  sounds: Sound[]; votes: Set<number>; onVote: (id: number, e: React.MouseEvent) => void;
   playing: number | null; onPlay: (id: number) => void; setPage: (p: Page) => void;
 }) => {
   const top3 = [...sounds].sort((a, b) => b.votes - a.votes).slice(0, 3);
@@ -236,7 +289,7 @@ const HomePage = ({ sounds, votes, onVote, playing, onPlay, setPage }: {
 };
 
 const GalleryPage = ({ sounds, votes, onVote, playing, onPlay }: {
-  sounds: Sound[]; votes: Set<number>; onVote: (id: number) => void;
+  sounds: Sound[]; votes: Set<number>; onVote: (id: number, e: React.MouseEvent) => void;
   playing: number | null; onPlay: (id: number) => void;
 }) => {
   const [filter, setFilter] = useState<string>('all');
@@ -276,7 +329,7 @@ const GalleryPage = ({ sounds, votes, onVote, playing, onPlay }: {
 };
 
 const RatingPage = ({ sounds, votes, onVote, playing, onPlay }: {
-  sounds: Sound[]; votes: Set<number>; onVote: (id: number) => void;
+  sounds: Sound[]; votes: Set<number>; onVote: (id: number, e: React.MouseEvent) => void;
   playing: number | null; onPlay: (id: number) => void;
 }) => {
   const sorted = [...sounds].sort((a, b) => {
@@ -326,7 +379,7 @@ const RatingPage = ({ sounds, votes, onVote, playing, onPlay }: {
                     </div>
                   </div>
                   <button
-                    onClick={() => onVote(s.id)}
+                    onClick={(e) => onVote(s.id, e)}
                     className={`vote-btn flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center border transition-all ${
                       votes.has(s.id)
                         ? 'bg-yellow-400/15 border-yellow-500/40 text-yellow-300'
@@ -425,17 +478,34 @@ const Index = () => {
   const [page, setPage] = useState<Page>('home');
   const [votes, setVotes] = useState<Set<number>>(new Set());
   const [playing, setPlaying] = useState<number | null>(null);
+  const [clouds, setClouds] = useState<FartCloud[]>([]);
+  const cloudCounter = useRef(0);
 
-  const handleVote = (id: number) => {
+  const spawnCloud = useCallback((e: React.MouseEvent) => {
+    const id = ++cloudCounter.current;
+    const x = e.clientX;
+    const y = e.clientY;
+    setClouds(prev => [...prev, { id, x, y }]);
+    setTimeout(() => setClouds(prev => prev.filter(c => c.id !== id)), 1000);
+  }, []);
+
+  const handleVote = useCallback((id: number, e?: React.MouseEvent) => {
     setVotes(prev => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      const adding = !next.has(id);
+      if (adding) {
+        next.add(id);
+        playFartSound(id);
+        if (e) spawnCloud(e);
+      } else {
+        next.delete(id);
+      }
       return next;
     });
-  };
+  }, [spawnCloud]);
 
   const handlePlay = (id: number) => {
+    playFartSound(id);
     setPlaying(prev => prev === id ? null : id);
   };
 
@@ -448,6 +518,23 @@ const Index = () => {
       {page === 'gallery' && <GalleryPage {...commonProps} />}
       {page === 'rating' && <RatingPage {...commonProps} />}
       {page === 'about' && <AboutPage setPage={setPage} />}
+
+      {/* Облачки пуков */}
+      {clouds.map(c => (
+        <div
+          key={c.id}
+          className="fixed pointer-events-none z-[999] select-none"
+          style={{
+            left: c.x,
+            top: c.y,
+            transform: 'translate(-50%, -50%)',
+            animation: 'fart-cloud 1s ease-out forwards',
+            fontSize: '2.5rem',
+          }}
+        >
+          💨
+        </div>
+      ))}
     </div>
   );
 };

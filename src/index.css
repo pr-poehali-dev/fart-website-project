@@ -272,3 +272,18 @@
   color: var(--neon-yellow);
   filter: drop-shadow(0 0 6px rgba(212, 255, 0, 0.5));
 }
+
+@keyframes fart-cloud {
+  0% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(0.5);
+  }
+  40% {
+    opacity: 1;
+    transform: translate(-50%, -120%) scale(1.4);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-20%, -240%) scale(0.9) rotate(15deg);
+  }
+}
